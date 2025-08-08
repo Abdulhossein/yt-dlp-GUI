@@ -1,5 +1,8 @@
+from pathlib import Path
 import sys
+import shutil
 import re
+import json
 from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout
 from PyQt5.QtWidgets import QFormLayout, QLabel, QLineEdit, QCheckBox, QPushButton, QPlainTextEdit, QProgressBar, QFileDialog, QMessageBox
 from PyQt5.QtCore import QProcess, Qt
@@ -584,6 +587,58 @@ class YtDlpGUI(QMainWindow):
         auth_layout.addRow(video_pass_label, edit_video_pass)
         # (Skipping some advanced authentication options for brevity)
 
+        
+        # Load cookie.json and convert to cookies.txt
+        cookie_button = QPushButton("Load cookie.json")
+        cookie_button.setToolTip("Convert and load cookie.json into yt-dlp compatible cookies.txt format")
+        def load_cookie_json():
+            path, _ = QFileDialog.getOpenFileName(self, "Open cookie.json", "", "JSON Files (*.json)")
+            if not path:
+                return
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    cookies = json.load(f)
+                netscape_lines = [
+                    "# Netscape HTTP Cookie File",
+                    "# Converted from cookie.json",
+                    "#"
+                ]
+                for cookie in cookies:
+                    domain = cookie["domain"]
+                    flag = "TRUE" if not cookie.get("hostOnly", False) else "FALSE"
+                    path_ = cookie["path"]
+                    secure = "TRUE" if cookie.get("secure", False) else "FALSE"
+                    expiration = int(cookie.get("expirationDate", 0))
+                    name = cookie["name"]
+                    value = cookie["value"]
+                    line = f"{domain}\t{flag}\t{path_}\t{secure}\t{expiration}\t{name}\t{value}"
+                    netscape_lines.append(line)
+                with open("cookies.txt", "w", encoding="utf-8") as f:
+                    f.write("\n".join(netscape_lines))
+                QMessageBox.information(self, "Cookies Loaded", "cookie.json successfully converted to cookies.txt")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to convert cookie.json: {e}")
+        cookie_button.clicked.connect(load_cookie_json)
+        auth_layout.addRow(cookie_button)
+    
+        
+        save_auth_button = QPushButton("➕ Save Auth Info")
+        save_auth_button.setToolTip("Store current username/password into config.json")
+        def save_auth_to_config():
+            auth_data = {
+                "username": self.value_widgets.get("--username").text(),
+                "password": self.value_widgets.get("--password").text(),
+                "2fa": self.value_widgets.get("--twofactor").text()
+            }
+            try:
+                with open("config.json", "w", encoding="utf-8") as f:
+                    json.dump(auth_data, f, indent=2)
+                QMessageBox.information(self, "Saved", "Authentication info saved to config.json")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save auth info: {e}")
+        save_auth_button.clicked.connect(save_auth_to_config)
+        auth_layout.addRow(save_auth_button)
+
         tabs.addTab(auth_tab, "Authentication")
 
         ##### Advanced Tab (SponsorBlock, Verbosity, Workarounds, etc.) #####
@@ -639,6 +694,25 @@ class YtDlpGUI(QMainWindow):
         self.flag_widgets["--bidi-workaround"] = cb_bidi_workaround
         adv_layout.addRow(cb_bidi_workaround)
 
+        
+        save_all_button = QPushButton("💾 Save All Settings")
+        save_all_button.setToolTip("Save all GUI options to config.json")
+        def save_all_to_config():
+            settings = {
+                'flags': {opt: widget.isChecked() for opt, widget in self.flag_widgets.items()},
+                'values': {opt: widget.text() for opt, widget in self.value_widgets.items() if isinstance(widget, QLineEdit)},
+                'url_input': self.url_input.text(),
+                'output_dir': self.outdir_edit.text() if hasattr(self, 'outdir_edit') else ""
+            }
+            try:
+                with open("config.json", "w", encoding="utf-8") as f:
+                    json.dump(settings, f, indent=2)
+                QMessageBox.information(self, "Saved", "All settings saved to config.json")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to save: {e}")
+        save_all_button.clicked.connect(save_all_to_config)
+        adv_layout.addRow(save_all_button)
+    
         tabs.addTab(adv_tab, "Advanced")
 
         # Log output text area
@@ -653,6 +727,7 @@ class YtDlpGUI(QMainWindow):
 
         # QProcess for running yt-dlp
         self.process = None
+        self.load_saved_settings()
 
         # Preserve the no_color checkbox (not stored in flag_widgets) by linking it to a variable
         self.no_color_checkbox = cb_no_color
@@ -685,6 +760,11 @@ class YtDlpGUI(QMainWindow):
             return
 
         cmd = ["yt-dlp"]
+        # Always attach cookie file if it exists
+        cookie_path = r"/mnt/data/cookies.txt"
+        if Path(cookie_path).exists():
+            cmd += ["--cookies", cookie_path]
+
         # Add flag options (checkboxes)
         for opt, widget in self.flag_widgets.items():
             if isinstance(widget, QCheckBox) and widget.isChecked():
@@ -739,6 +819,7 @@ class YtDlpGUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to start yt-dlp: {e}")
             self.process = None
+        self.load_saved_settings()
 
     def _on_process_output(self):
         """Read output from yt-dlp process and update log and progress bar."""
@@ -768,6 +849,7 @@ class YtDlpGUI(QMainWindow):
             self.log_output.appendPlainText("Download completed.")
             self.progress_bar.setValue(100)
         self.process = None
+        self.load_saved_settings()
 
     def load_configuration(self):
         """Load options from a yt-dlp configuration file into the GUI."""
@@ -830,6 +912,47 @@ class YtDlpGUI(QMainWindow):
         QMessageBox.about(self, "About yt-dlp GUI",
                           "yt-dlp GUI\nA graphical user interface for yt-dlp.\n\n"
                           "Allows downloading videos with ease, exposing advanced options in a friendly way.")
+
+
+
+    def closeEvent(self, event):
+        """Save settings to JSON on exit."""
+        settings = {
+            'flags': {opt: widget.isChecked() for opt, widget in self.flag_widgets.items()},
+            'values': {opt: widget.text() for opt, widget in self.value_widgets.items() if isinstance(widget, QLineEdit)},
+            'url_input': self.url_input.text(),
+            'output_dir': self.outdir_edit.text() if hasattr(self, 'outdir_edit') else ""
+        }
+        try:
+            with open("gui_settings.json", "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            print("Failed to save settings:", e)
+        event.accept()
+
+    def load_saved_settings(self):
+        """Load settings from JSON on startup."""
+        try:
+            with open("gui_settings.json", "r", encoding="utf-8") as f:
+                settings = json.load(f)
+            for opt, state in settings.get('flags', {}).items():
+                if opt in self.flag_widgets:
+                    self.flag_widgets[opt].setChecked(state)
+            for opt, val in settings.get('values', {}).items():
+                if opt in self.value_widgets:
+                    self.value_widgets[opt].setText(val)
+            self.url_input.setText(settings.get('url_input', ''))
+            if hasattr(self, 'outdir_edit'):
+                self.outdir_edit.setText(settings.get('output_dir', ''))
+        except Exception:
+            pass
+
+
+
+import shutil
+if shutil.which("ffmpeg") is None:
+    print("⚠️ FFmpeg not found. yt-dlp may not work correctly for some formats.")
+    print("➡️ Download it from https://ffmpeg.org/download.html or enter its path manually in config.")
 
 
 if __name__ == "__main__":
