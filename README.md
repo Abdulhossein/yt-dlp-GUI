@@ -200,7 +200,7 @@ The **config.json** file controls everything! Modify it to customize behavior:
     "theme": "dark"  // or "light"
   },
   "download": {
-    "save_path": "C:/Users/morad/Desktop/downloads",
+    "save_path": "C:/Users/Abdulhossein/Desktop/downloads",
     "filename_template": "%(title)s [%(id)s].%(ext)s",
     "retries": 10,
     "fragment_retries": 10,
