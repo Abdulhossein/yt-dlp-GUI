@@ -200,7 +200,11 @@ DEFAULT_CONFIG = {
     },
     "authentication": {
         "use_cookies": False,
-        "cookie_browser": "chrome"
+        "cookie_browser": "chrome",
+        "cookie_file_path": "",
+        "use_custom_headers": False,
+        "custom_header_type": "Desktop",
+        "use_headers_from_cookies": False
     }
 }
 
@@ -291,6 +295,40 @@ class DatabaseManager:
 
 class YouTubeDownloader:
     """Main class for managing YouTube downloads"""
+    
+    # Custom User-Agent headers for different device types
+    CUSTOM_HEADERS = {
+        "Desktop": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        },
+        "Android": {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
+        },
+        "iOS": {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        },
+        "TV": {
+            "User-Agent": "Mozilla/5.0 (CrKey armv7l 1.54.110279) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        },
+        "Chrome": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+        },
+        "Firefox": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0"
+        },
+        "Safari": {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+        },
+        "Edge": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0"
+        },
+        "Samsung Smart TV": {
+            "User-Agent": "Mozilla/5.0 (SmartTV; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/16.0 Chrome/96.0.4664.45 TV Safari/537.36"
+        },
+        "Roku": {
+            "User-Agent": "Mozilla/5.0 (Roku/DVP-7.70 (297.70E04154A)) Gecko/20100101 Firefox/108.0"
+        }
+    }
 
     def __init__(self, config_path='config.json', progress_callback=None, postprocessor_callback=None, log_callback=None):
         self.progress_callback = progress_callback
@@ -432,6 +470,52 @@ class YouTubeDownloader:
     def postprocessor_hook(self, d):
         if self.postprocessor_callback:
             self.postprocessor_callback(d)
+    
+    def extract_headers_from_cookies(self, cookie_file_path):
+        """Extract useful headers from cookie file."""
+        try:
+            with open(cookie_file_path, 'r', encoding='utf-8') as f:
+                cookies = json.load(f)
+            
+            headers = {}
+            if isinstance(cookies, list):
+                # Extract security cookies if available
+                for cookie in cookies:
+                    if cookie.get('name') in ['PSID', 'SSID', 'APISID', 'SAPISID']:
+                        headers[f"X-{cookie['name']}"] = cookie.get('value', '')
+            
+            # Add default Chrome headers
+            headers['User-Agent'] = self.CUSTOM_HEADERS.get('Chrome', {}).get('User-Agent', '')
+            headers['Accept-Language'] = 'en-US,en;q=0.9'
+            headers['Accept-Encoding'] = 'gzip, deflate, br'
+            headers['Sec-Fetch-Dest'] = 'document'
+            headers['Sec-Fetch-Mode'] = 'navigate'
+            headers['Sec-Fetch-Site'] = 'none'
+            
+            return headers if headers else None
+        except Exception as e:
+            self.log(f"Failed to extract headers from cookies: {e}")
+            return None
+    
+    def get_http_headers(self, config):
+        """Build HTTP headers based on config."""
+        headers = {}
+        
+        auth_config = config.get('authentication', {})
+        
+        # Extract headers from cookie file if enabled
+        if auth_config.get('use_headers_from_cookies') and auth_config.get('cookie_file_path'):
+            extracted_headers = self.extract_headers_from_cookies(auth_config['cookie_file_path'])
+            if extracted_headers:
+                headers.update(extracted_headers)
+        
+        # Apply custom headers if enabled
+        if auth_config.get('use_custom_headers'):
+            header_type = auth_config.get('custom_header_type', 'Desktop')
+            custom_header = self.CUSTOM_HEADERS.get(header_type, {})
+            headers.update(custom_header)
+        
+        return headers if headers else None
 
 
 class PlaylistSelectorWindow(ctk.CTkToplevel):
@@ -619,13 +703,54 @@ class SettingsWindow(ctk.CTkToplevel):
                        "Source IP Address", "network", 3)
 
     def create_auth_tab(self, tab):
+        tab.grid_columnconfigure(1, weight=1)
+        
         self.add_checkbox(tab, "use_cookies",
                           "Use Cookies from Browser", "authentication", 0)
         self.add_dropdown(tab, "cookie_browser", "Cookie Browser", "authentication", 1, [
                           "chrome", "firefox", "edge", "opera", "vivaldi", "safari"])
         ctk.CTkButton(tab, text="Open Browser to Login", command=self.open_browser_and_enable_cookies).grid(
             row=1, column=2, padx=10, pady=10, sticky="w")
+        
+        # Cookie file loader
+        self.add_entry(tab, "cookie_file_path", "Cookie File Path (JSON)", "authentication", 2, has_browse=True)
+        ctk.CTkButton(tab, text="Load Cookie File", command=self.load_cookie_file).grid(
+            row=2, column=2, padx=10, pady=10, sticky="w")
+        
+        # Custom headers section
+        self.add_checkbox(tab, "use_custom_headers", "Use Custom Headers", "authentication", 3)
+        self.add_dropdown(tab, "custom_header_type", "Header Type", "authentication", 4, [
+            "Desktop", "Android", "iOS", "TV", "Chrome", "Firefox", "Safari", "Edge", "Samsung Smart TV", "Roku"
+        ])
+        
+        # Use headers from cookies
+        self.add_checkbox(tab, "use_headers_from_cookies", "Extract Headers from Cookie File", "authentication", 5)
 
+    def load_cookie_file(self):
+        """Load and validate cookie file."""
+        try:
+            cookie_path_var, _, _, _ = self.vars.get('cookie_file_path')
+            if not cookie_path_var:
+                messagebox.showerror("Error", "Could not find cookie path field.")
+                return
+            
+            cookie_path = cookie_path_var.get()
+            if not cookie_path or not Path(cookie_path).exists():
+                messagebox.showerror("Error", "Cookie file path is invalid or does not exist.")
+                return
+            
+            with open(cookie_path, 'r', encoding='utf-8') as f:
+                cookies = json.load(f)
+            
+            if isinstance(cookies, list) and len(cookies) > 0:
+                messagebox.showinfo("Success", f"Loaded {len(cookies)} cookies from file.")
+            else:
+                messagebox.showwarning("Warning", "Cookie file is empty or invalid format.")
+        except json.JSONDecodeError:
+            messagebox.showerror("Error", "Cookie file is not valid JSON.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load cookie file: {e}")
+    
     def open_browser_and_enable_cookies(self):
         # Keep the browser selection for yt-dlp, but don't use it for opening the URL here.
         browser_var, _, _, _ = self.vars.get('cookie_browser')
@@ -662,8 +787,16 @@ class SettingsWindow(ctk.CTkToplevel):
         tab.grid_rowconfigure(0, weight=1)
         self.update_log = ctk.CTkTextbox(tab, height=300)
         self.update_log.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        ctk.CTkButton(tab, text="Check for Updates", command=self.run_updates).grid(
-            row=1, column=0, padx=10, pady=10)
+        
+        # Button frame for update buttons
+        button_frame = ctk.CTkFrame(tab)
+        button_frame.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+        button_frame.grid_columnconfigure((0, 1), weight=1)
+        
+        ctk.CTkButton(button_frame, text="Check and Update", command=self.run_updates).grid(
+            row=0, column=0, padx=5, pady=5, sticky="ew")
+        ctk.CTkButton(button_frame, text="Force Update (Reinstall) All Modules", command=self.run_force_updates, 
+                     fg_color="red").grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
     def add_checkbox(self, tab, name, text, section, row): self._add_widget(
         tab, name, text, section, row, "checkbox")
@@ -714,8 +847,11 @@ class SettingsWindow(ctk.CTkToplevel):
     def change_theme(self, new_theme: str): ctk.set_appearance_mode(
         new_theme.lower())
 
-    def run_updates(self): threading.Thread(
-        target=self._update_dependencies, daemon=True).start()
+    def run_updates(self): 
+        threading.Thread(target=self._update_dependencies, daemon=True).start()
+    
+    def run_force_updates(self): 
+        threading.Thread(target=self._force_update_dependencies, daemon=True).start()
 
     def _update_dependencies(self):
         if not self.update_log.winfo_exists():
@@ -743,6 +879,36 @@ class SettingsWindow(ctk.CTkToplevel):
             if self.update_log.winfo_exists():
                 self.update_log.insert(
                     "end", f"\n\nUpdate check finished with code: {return_code}.")
+        except Exception as e:
+            if self.update_log.winfo_exists():
+                self.update_log.insert("end", f"\n\nAn error occurred: {e}")
+    
+    def _force_update_dependencies(self):
+        if not self.update_log.winfo_exists():
+            return
+        self.update_log.delete("1.0", "end")
+        self.update_log.insert("end", "Starting FORCE update (reinstall)...\n")
+        try:
+            command = [sys.executable, '-m', 'pip', 'install', '--force-reinstall',
+                       '--no-cache-dir', 'yt-dlp', 'customtkinter', 'Pillow', 'requests']
+            if self.update_log.winfo_exists():
+                self.update_log.insert(
+                    "end", f"Running: {' '.join(command)}\n\n")
+            else:
+                return
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
+            for line in iter(process.stdout.readline, ''):
+                if not self.update_log.winfo_exists():
+                    process.kill()
+                    break
+                self.update_log.insert("end", line)
+                self.update_log.see("end")
+            process.stdout.close()
+            return_code = process.wait()
+            if self.update_log.winfo_exists():
+                self.update_log.insert(
+                    "end", f"\n\nForce update finished with code: {return_code}.")
         except Exception as e:
             if self.update_log.winfo_exists():
                 self.update_log.insert("end", f"\n\nAn error occurred: {e}")
@@ -1475,6 +1641,10 @@ class MainWindow(ctk.CTk):
         quality_is_audio = (height == "audio")
         save_path = Path(config['download']['save_path']).expanduser()
         save_path.mkdir(parents=True, exist_ok=True)
+        
+        # Get custom headers if configured
+        http_headers = self.downloader.get_http_headers(config)
+        
         # Build the full yt-dlp options dictionary from the config
         options = {
             'verbose': True,
@@ -1493,6 +1663,7 @@ class MainWindow(ctk.CTk):
             'socket_timeout': config['network']['socket_timeout'],
             'source_address': config['network']['source_address'] if config['network']['source_address'] != "0.0.0.0" else None,
             'cookiesfrombrowser': (config['authentication']['cookie_browser'],) if config['authentication']['use_cookies'] else None,
+            'http_headers': http_headers if http_headers else {},
             # To stabilize extraction
             'extractor_args': {'youtube': {'player_client': ['default']}},
         }
